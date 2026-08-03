@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 
 const techniques = [
   { id: 1, title: "Проход в одну ногу", category: "Броски", duration: "12 мин", level: "Базовый", image: "/images/technique-video.jpg", video: "/videos/tech-single-leg.mp4" },
@@ -29,6 +30,106 @@ const champions = ["АЛЕКСАНДР КАРЕЛИН", "БУВАЙСАР САЙ
 
 type VideoModal = { title: string; src: string } | null;
 type Exercise = "idle" | "pushup" | "pullup";
+type Profile = { name: string; age: number; avatar: string };
+
+const PROFILE_STORAGE_KEY = "zakhvat-profile-v1";
+
+function resizeAvatar(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Не удалось прочитать фотографию"));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("Не удалось обработать фотографию"));
+      image.onload = () => {
+        const canvas = document.createElement("canvas");
+        const size = Math.min(image.width, image.height);
+        const sourceX = (image.width - size) / 2;
+        const sourceY = (image.height - size) / 2;
+        canvas.width = 512;
+        canvas.height = 512;
+        const context = canvas.getContext("2d");
+        if (!context) return reject(new Error("Не удалось обработать фотографию"));
+        context.drawImage(image, sourceX, sourceY, size, size, 0, 0, 512, 512);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function RegistrationScreen({ initial, onSave, onCancel }: { initial: Profile | null; onSave: (profile: Profile) => void; onCancel?: () => void }) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [age, setAge] = useState(initial?.age ? String(initial.age) : "");
+  const [avatar, setAvatar] = useState(initial?.avatar ?? "");
+  const [error, setError] = useState("");
+  const [processingPhoto, setProcessingPhoto] = useState(false);
+
+  const handlePhoto = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Выберите файл изображения");
+      return;
+    }
+    setProcessingPhoto(true);
+    setError("");
+    try {
+      setAvatar(await resizeAvatar(file));
+    } catch (photoError) {
+      setError(photoError instanceof Error ? photoError.message : "Не удалось обработать фотографию");
+    } finally {
+      setProcessingPhoto(false);
+    }
+  };
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const cleanName = name.trim();
+    const numericAge = Number(age);
+    if (cleanName.length < 2) return setError("Введите имя — минимум 2 символа");
+    if (!Number.isInteger(numericAge) || numericAge < 6 || numericAge > 100) return setError("Укажите возраст от 6 до 100 лет");
+    if (!avatar) return setError("Добавьте фотографию профиля");
+    onSave({ name: cleanName, age: numericAge, avatar });
+  };
+
+  return (
+    <main className="registration-shell">
+      <div className="registration-glow registration-glow-red" />
+      <div className="registration-glow registration-glow-blue" />
+      <section className="registration-card" aria-labelledby="registration-title">
+        <div className="registration-brand">ЗАХВАТ</div>
+        <div className="registration-kicker">{initial ? "Профиль спортсмена" : "Первый выход на ковёр"}</div>
+        <h1 id="registration-title">{initial ? "Измени профиль" : "Создай свой профиль"}</h1>
+        <p className="registration-copy">Заполни данные один раз — приложение запомнит тебя и встретит по имени при следующем открытии.</p>
+
+        <form className="registration-form" onSubmit={submit}>
+          <label className="avatar-picker">
+            <input type="file" accept="image/*" onChange={handlePhoto} aria-label="Загрузить фотографию профиля" />
+            {avatar ? <img src={avatar} alt="Предпросмотр аватарки" /> : <span className="avatar-placeholder"><b>+</b><small>{processingPhoto ? "Обработка…" : "Добавить фото"}</small></span>}
+            {avatar && <span className="avatar-change">Сменить фото</span>}
+          </label>
+
+          <label className="registration-field">
+            <span>Имя</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" maxLength={40} placeholder="Например, Тимур" required />
+          </label>
+
+          <label className="registration-field">
+            <span>Возраст</span>
+            <input value={age} onChange={(event) => setAge(event.target.value)} type="number" inputMode="numeric" min={6} max={100} placeholder="18" required />
+          </label>
+
+          {error && <p className="registration-error" role="alert">{error}</p>}
+          <button className="registration-submit" type="submit" disabled={processingPhoto}>{initial ? "Сохранить изменения" : "Начать тренировку"}</button>
+          {onCancel && <button className="registration-cancel" type="button" onClick={onCancel}>Вернуться без изменений</button>}
+        </form>
+        <p className="registration-note">Данные остаются на этом устройстве и используются только внутри приложения.</p>
+      </section>
+    </main>
+  );
+}
 
 export default function Home() {
   const [activeStep, setActiveStep] = useState(1);
@@ -38,7 +139,32 @@ export default function Home() {
   const [exercise, setExercise] = useState<Exercise>("idle");
   const [pushups, setPushups] = useState(0);
   const [pullups, setPullups] = useState(0);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileReady, setProfileReady] = useState(false);
+  const [profileEditing, setProfileEditing] = useState(false);
   const trainingVideo = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    try {
+      const savedProfile = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+      if (savedProfile) {
+        const parsed = JSON.parse(savedProfile) as Partial<Profile>;
+        if (typeof parsed.name === "string" && typeof parsed.age === "number" && typeof parsed.avatar === "string") {
+          setProfile(parsed as Profile);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+    } finally {
+      setProfileReady(true);
+    }
+  }, []);
+
+  const saveProfile = (nextProfile: Profile) => {
+    window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(nextProfile));
+    setProfile(nextProfile);
+    setProfileEditing(false);
+  };
 
   const filteredTechniques = useMemo(
     () => category === "Все" ? techniques : techniques.filter((item) => item.category === category),
@@ -65,6 +191,14 @@ export default function Home() {
     setPullups(0);
   };
 
+  if (!profileReady) {
+    return <main className="registration-shell registration-loading"><div className="registration-brand">ЗАХВАТ</div><div className="registration-loader" aria-label="Загрузка профиля" /></main>;
+  }
+
+  if (!profile || profileEditing) {
+    return <RegistrationScreen initial={profile} onSave={saveProfile} onCancel={profile ? () => setProfileEditing(false) : undefined} />;
+  }
+
   return (
     <main className="min-h-screen bg-mat-black text-white font-sans selection:bg-mat-red">
       <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4 border-b border-white/10 bg-mat-black/80 backdrop-blur-md">
@@ -75,7 +209,13 @@ export default function Home() {
           <a href="#styles" className="hover:text-mat-red transition-colors">Стили</a>
           <a href="#coach" className="hover:text-mat-red transition-colors">Тренер</a>
         </div>
-        <button onClick={() => openVideo("Схватка на ковре", "/videos/wrestling-match.mp4")} className="bg-white text-mat-black px-5 py-2 text-xs font-black uppercase tracking-tight hover:bg-mat-red hover:text-white transition-colors">Выйти на ковёр</button>
+        <div className="nav-profile-actions">
+          <button className="profile-chip" onClick={() => setProfileEditing(true)} aria-label="Открыть и изменить профиль">
+            <img src={profile.avatar} alt="" />
+            <span><b>{profile.name}</b><small>{profile.age} лет</small></span>
+          </button>
+          <button onClick={() => openVideo("Схватка на ковре", "/videos/wrestling-match.mp4")} className="bg-white text-mat-black px-5 py-2 text-xs font-black uppercase tracking-tight hover:bg-mat-red hover:text-white transition-colors">Выйти на ковёр</button>
+        </div>
       </nav>
 
       <section id="top" className="relative px-6 pt-16 pb-28 overflow-hidden">
